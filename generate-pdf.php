@@ -17,6 +17,7 @@ try {
     $pdf = $generator->generate();
 
     $pdf->Output($outputFile, 'F');
+    $pdf->Output($outputFile, 'I');
 
     echo "PDF generated successfully: {$outputFile}\n";
 } catch (Exception $e) {

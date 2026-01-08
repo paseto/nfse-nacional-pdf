@@ -4,7 +4,7 @@ composer.lock
 
 # Generated PDFs
 *.pdf
-!nfe-1.pdf
+*.xml
 
 # IDE
 .idea/
