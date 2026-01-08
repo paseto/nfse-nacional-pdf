@@ -2,6 +2,7 @@
     "name": "paseto/nfse-nacional-pdf",
     "description": "NFS-e PDF",
     "type": "project",
+    "license": "MIT",
     "require": {
         "php": ">=7.4",
         "tecnickcom/tcpdf": "^6.6"
