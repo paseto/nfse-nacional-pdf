@@ -9,6 +9,13 @@ class NfsePdfGenerator
     private $pdf;
     private $data;
     private $margin = 5;
+    private $logoSvg = null;
+    private $headerInfo = [
+        'municipalityLine' => null,
+        'secretariatLine'  => null,
+        'phoneLine'        => null,
+        'emailLine'        => null,
+    ];
 
     public function __construct()
     {
@@ -20,6 +27,28 @@ class NfsePdfGenerator
         $this->pdf->SetMargins($this->margin, $this->margin, $this->margin);
         $this->pdf->SetAutoPageBreak(true, $this->margin);
         $this->pdf->SetFont('helvetica', '', 8);
+    }
+
+    /**
+     * Set SVG content for the logo rendered in the top-left
+     * corner of the header. Pass the raw SVG XML string.
+     *
+     * Example:
+     *  $svg = file_get_contents('BrasaoCriciuma.svg');
+     *  $generator->setLogoSvg($svg);
+     */
+    public function setLogoSvg(string $svgContent)
+    {
+        $this->logoSvg = $svgContent;
+
+        return $this;
+    }
+
+    public function setHeaderInfo(array $headerInfo)
+    {
+        $this->headerInfo = array_merge($this->headerInfo, $headerInfo);
+
+        return $this;
     }
 
     public function parseXml($xmlFile)
@@ -107,7 +136,7 @@ class NfsePdfGenerator
         $this->addEmitente();
         $this->addHorizontalLine();
         $this->addTomador();
-        $this->addHorizontalLine();
+        $this->addHorizontalLine(false);
         $this->addServico();
         $this->addHorizontalLine();
         $this->addTributacao();
@@ -143,20 +172,22 @@ class NfsePdfGenerator
         $this->pdf->Rect($x1, $y1, $width, $height, 'D');
     }
 
-    private function addHorizontalLine()
+    private function addHorizontalLine($addLineHeight = true)
     {
         $y = $this->pdf->GetY();
         $pageWidth = 210; // A4 width in mm
         $rightEdge = $pageWidth - $this->margin;
         $this->pdf->Line($this->margin, $y, $rightEdge, $y);
-        $this->pdf->Ln(2);
+        if ($addLineHeight) {
+            $this->pdf->Ln(2);
+        }
     }
 
     private function addHeader()
     {
         $startY = $this->pdf->GetY();
 
-        // Left column - Logo image
+        // Left column - NFSe logo image (fixed base layout)
         $logoPath = __DIR__ . '/../assets/logo-nfse-assinatura-horizontal.png';
         if (file_exists($logoPath)) {
             $this->pdf->Image($logoPath, $this->margin, $startY, 50, 0, 'PNG', '', '', false, 300, '', false, false, 0, false, false, false);
@@ -171,18 +202,37 @@ class NfsePdfGenerator
         $this->pdf->SetFont('helvetica', 'B', 9);
         $this->pdf->Cell(50, 4, 'Documento Auxiliar da NFS-e', 0, 0, 'C');
 
-        // Right column - Municipality info (73.84% from HTML = ~155mm from page edge = ~145mm from margin)
-        $rightX = 137; // Adjusted for 2mm margin (was 145, now 145-8=137)
-        $this->pdf->SetXY($rightX, $startY);
+        // Right column - Municipality coat of arms (SVG) to the LEFT, text block to the RIGHT
+        $rightX        = 137; // base X for the right-side header block
+        $blockWidth    = 55;  // total width originally used for the right header cell
+        $logoWidth     = 12;
+        $gap           = 2;
+        $textBlockWidth = $blockWidth - $logoWidth - $gap;
+
+        // Municipality SVG logo on the left of the text block
+        if (!empty($this->logoSvg)) {
+            // TCPDF: '@' prefix means raw SVG content
+            $logoX = $rightX; // left edge of the right header block
+            $this->pdf->ImageSVG('@' . $this->logoSvg, $logoX, $startY, $logoWidth, '', '', '', 0, false);
+        }
+
+        // Text block to the RIGHT of the SVG logo
+        $textX = $rightX + $logoWidth + $gap;
+        $municipalityLine = $this->headerInfo['municipalityLine'] ?? ('Prefeitura Municipal de ' . $this->data['localEmissao']);
+        $secretariatLine  = $this->headerInfo['secretariatLine']  ?? 'Secretaria Municipal da Fazenda';
+        $phoneLine        = $this->headerInfo['phoneLine']        ?? '(48)3431-0074';
+        $emailLine        = $this->headerInfo['emailLine']        ?? 'tributos@criciuma.sc.gov.br';
+
+        $this->pdf->SetXY($textX, $startY);
         $this->pdf->SetFont('helvetica', 'B', 8);
-        $this->pdf->Cell(55, 3, 'Prefeitura Municipal de ' . $this->data['localEmissao'], 0, 1, 'R');
-        $this->pdf->SetXY($rightX, $startY + 3);
+        $this->pdf->Cell($textBlockWidth, 3, $municipalityLine, 0, 1, 'L');
+        $this->pdf->SetXY($textX, $startY + 3);
         $this->pdf->SetFont('helvetica', '', 6);
-        $this->pdf->Cell(55, 2.5, 'Secretaria Municipal da Fazenda', 0, 1, 'R');
-        $this->pdf->SetXY($rightX, $startY + 5.5);
-        $this->pdf->Cell(55, 2.5, '(48)3431-0074', 0, 1, 'R');
-        $this->pdf->SetXY($rightX, $startY + 8);
-        $this->pdf->Cell(55, 2.5, 'tributos@criciuma.sc.gov.br', 0, 1, 'R');
+        $this->pdf->Cell($textBlockWidth, 2.5, $secretariatLine, 0, 1, 'L');
+        $this->pdf->SetXY($textX, $startY + 5.5);
+        $this->pdf->Cell($textBlockWidth, 2.5, $phoneLine, 0, 1, 'L');
+        $this->pdf->SetXY($textX, $startY + 8);
+        $this->pdf->Cell($textBlockWidth, 2.5, $emailLine, 0, 1, 'L');
 
         // Move Y position down for next content
         $this->pdf->SetY($startY + 12);
@@ -484,9 +534,9 @@ class NfsePdfGenerator
         $this->pdf->Cell($col4W, 4, $toma['cep'], 0, 1, 'L');
         $this->pdf->Ln(2);
 
-        $this->pdf->SetFont('helvetica', 'B', 7);
-        $this->pdf->Cell(0, 4, 'INTERMEDIÁRIO DO SERVIÇO NÃO IDENTIFICADO NA NFS-e', 0, 1, 'L');
-        $this->pdf->Ln(2);
+        $this->pdf->SetFont('helvetica', '', 7);
+        $this->addHorizontalLine(false);
+        $this->pdf->Cell(0, 4, 'INTERMEDIÁRIO DO SERVIÇO NÃO IDENTIFICADO NA NFS-e', 0, 1, 'C');
     }
 
     private function addServico()
