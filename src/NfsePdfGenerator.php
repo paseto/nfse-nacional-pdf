@@ -119,6 +119,9 @@ class NfsePdfGenerator
                 'valorServico' => (float)$dps->valores->vServPrest->vServ,
                 'valorLiquido' => (float)$infNFSe->valores->vLiq,
                 'valorTotalRet' => (float)$infNFSe->valores->vTotalRet,
+                'bcIssqn' => (float)($infNFSe->valores->vBC ?? 0),
+                'aliqAplicada' => (float)($infNFSe->valores->pAliqAplic ?? 0),
+                'issqnApurado' => (float)($infNFSe->valores->vISSQN ?? 0),
             ],
             'dps' => [
                 'numero' => (string)$dps->nDPS,
@@ -437,12 +440,10 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col4X, $row3Y);
         $this->pdf->Cell($col4W, 4, 'CEP', 0, 1, 'L');
 
-        // Data row
+        // Data row — endereço ocupa colunas 1 e 2 (evita sobreposição pela célula vazia)
         $this->pdf->SetFont('helvetica', '', 8);
         $this->pdf->SetXY($col1X, $row3Y + 4);
-        $this->pdf->Cell($col1W, 4, $endereco, 0, 0, 'L');
-        $this->pdf->SetXY($col2X, $row3Y + 4);
-        $this->pdf->Cell($col2W, 4, '', 0, 0, 'L');
+        $this->pdf->Cell($col1W + $col2W, 4, $endereco, 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row3Y + 4);
         $this->pdf->Cell($col3W, 4, $this->data['localEmissao'] . ' - ' . $emit['uf'], 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row3Y + 4);
@@ -554,14 +555,16 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col4X, $row3Y);
         $this->pdf->Cell($col4W, 4, 'CEP', 0, 1, 'L');
 
-        // Data row
+        // Data row — endereço ocupa colunas 1 e 2 (evita sobreposição pela célula vazia)
+        $municipioTomador = $this->data['localIncidencia'];
+        if (!empty($toma['uf'])) {
+            $municipioTomador .= ' - ' . $toma['uf'];
+        }
         $this->pdf->SetFont('helvetica', '', 8);
         $this->pdf->SetXY($col1X, $row3Y + 4);
-        $this->pdf->Cell($col1W, 4, $endereco, 0, 0, 'L');
-        $this->pdf->SetXY($col2X, $row3Y + 4);
-        $this->pdf->Cell($col2W, 4, '', 0, 0, 'L');
+        $this->pdf->Cell($col1W + $col2W, 4, $endereco, 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row3Y + 4);
-        $this->pdf->Cell($col3W, 4, $this->data['localIncidencia'], 0, 0, 'L');
+        $this->pdf->Cell($col3W, 4, $municipioTomador, 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row3Y + 4);
         $this->pdf->Cell($col4W, 4, $toma['cep'], 0, 1, 'L');
         $this->pdf->Ln(2);
@@ -600,21 +603,51 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col4X, $startY);
         $this->pdf->Cell($col4W, 4, 'País da Prestação', 0, 1, 'L');
 
-        // Data row - Format code as 01.03.02
+        // Data row — código nacional com quebra de linha na coluna 1
         $this->pdf->SetFont('helvetica', '', 8);
         $codTribFormatted = $this->formatCodTribNac($serv['codTribNac']);
-        $codTrib = $codTribFormatted . ' - ' . substr($this->data['tribNac'], 0, 40) . '...';
-        $this->pdf->SetXY($col1X, $startY + 4);
-        $this->pdf->Cell($col1W, 4, $codTrib, 0, 0, 'L');
-        $this->pdf->SetXY($col2X, $startY + 4);
-        $this->pdf->Cell($col2W, 4, '-', 0, 0, 'L');
-        $this->pdf->SetXY($col3X, $startY + 4);
-        $this->pdf->Cell($col3W, 4, $this->data['localPrestacao'], 0, 0, 'L');
-        $this->pdf->SetXY($col4X, $startY + 4);
-        $this->pdf->Cell($col4W, 4, '-', 0, 1, 'L');
+        $codTrib = $this->truncateTextToLines(
+            $codTribFormatted . ' - ' . $this->data['tribNac'],
+            $col1W,
+            3
+        );
+        $dataRowY = $startY + 4;
+        $codTribHeight = $this->pdf->getStringHeight($col1W, $codTrib);
 
-        // Descrição
-        $row2Y = $this->pdf->GetY();
+        $this->pdf->SetXY($col1X, $dataRowY);
+        $this->pdf->MultiCell(
+            $col1W,
+            4,
+            $codTrib,
+            0,
+            'L',
+            false,
+            0,
+            $col1X,
+            $dataRowY,
+            true,
+            0,
+            false,
+            true,
+            0,
+            'T',
+            false
+        );
+        $localPrestacao = $this->data['localPrestacao'];
+        if (!empty($this->data['emitente']['uf'])) {
+            $localPrestacao .= ' - ' . $this->data['emitente']['uf'];
+        }
+
+        $this->pdf->SetXY($col2X, $dataRowY);
+        $this->pdf->Cell($col2W, 4, '-', 0, 0, 'L');
+        $this->pdf->SetXY($col3X, $dataRowY);
+        $this->pdf->Cell($col3W, 4, $localPrestacao, 0, 0, 'L');
+        $this->pdf->SetXY($col4X, $dataRowY);
+        $this->pdf->Cell($col4W, 4, '-', 0, 0, 'L');
+
+        // Descrição — abaixo do bloco do código nacional (até 3 linhas)
+        $row2Y = $dataRowY + $codTribHeight;
+        $this->pdf->SetY($row2Y);
         $this->pdf->SetFont('helvetica', 'B', 7);
         $this->pdf->SetXY($col1X, $row2Y);
         $this->pdf->Cell($col1W, 4, 'Descrição do Serviço', 0, 0, 'L');
@@ -662,6 +695,17 @@ class NfsePdfGenerator
         $this->pdf->SetFont('helvetica', '', 8);
 
         $trib = $this->data['tributacao'];
+        $val = $this->data['valores'];
+        $localIncidencia = $this->data['localIncidencia'];
+        if (!empty($this->data['emitente']['uf'])) {
+            $localIncidencia .= ' - ' . $this->data['emitente']['uf'];
+        }
+        $tpRetISSQNMap = [
+            '1' => 'Não Retido',
+            '2' => 'Retido pelo Tomador',
+            '3' => 'Retido pelo Intermediário',
+        ];
+        $retencaoIssqn = $tpRetISSQNMap[(string)($trib['tpRetISSQN'] ?? '')] ?? '-';
         $startY = $this->pdf->GetY();
 
         // Header row
@@ -682,7 +726,7 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col2X, $startY + 4);
         $this->pdf->Cell($col2W, 4, '-', 0, 0, 'L');
         $this->pdf->SetXY($col3X, $startY + 4);
-        $this->pdf->Cell($col3W, 4, $this->data['localIncidencia'], 0, 0, 'L');
+        $this->pdf->Cell($col3W, 4, $localIncidencia, 0, 0, 'L');
         $this->pdf->SetXY($col4X, $startY + 4);
         $this->pdf->Cell($col4W, 4, 'Nenhum', 0, 1, 'L');
 
@@ -709,7 +753,6 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col4X, $row2Y + 4);
         $this->pdf->Cell($col4W, 4, '-', 0, 1, 'L');
 
-        $val = $this->data['valores'];
         // Header row
         $row3Y = $this->pdf->GetY();
         $this->pdf->SetFont('helvetica', 'B', 7);
@@ -748,14 +791,15 @@ class NfsePdfGenerator
         // Data row
         $this->pdf->SetFont('helvetica', '', 8);
         $this->pdf->SetXY($col1X, $row4Y + 4);
-        $this->pdf->Cell($col1W, 4, '-', 0, 0, 'L');
+        $this->pdf->Cell($col1W, 4, $val['bcIssqn'] > 0 ? 'R$ ' . number_format($val['bcIssqn'], 2, ',', '.') : '-', 0, 0, 'L');
         $this->pdf->SetXY($col2X, $row4Y + 4);
-        $this->pdf->Cell($col2W, 4, '-', 0, 0, 'L');
+        $this->pdf->Cell($col2W, 4, $val['aliqAplicada'] > 0 ? number_format($val['aliqAplicada'], 2, ',', '.') . '%' : '-', 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row4Y + 4);
-        $this->pdf->Cell($col3W, 4, 'Não Retido', 0, 0, 'L');
+        $this->pdf->Cell($col3W, 4, $retencaoIssqn, 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row4Y + 4);
-        $this->pdf->Cell($col4W, 4, '-', 0, 1, 'L');
+        $this->pdf->Cell($col4W, 4, $val['issqnApurado'] > 0 ? 'R$ ' . number_format($val['issqnApurado'], 2, ',', '.') : '-', 0, 1, 'L');
 
+        $this->addHorizontalLine();
         $this->pdf->SetFont('helvetica', 'B', 7);
         $this->pdf->Cell(0, 4, 'TRIBUTAÇÃO FEDERAL', 0, 1, 'L');
         $this->pdf->SetFont('helvetica', '', 8);
@@ -766,11 +810,11 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col1X, $row5Y);
         $this->pdf->Cell($col1W, 4, 'IRRF', 0, 0, 'L');
         $this->pdf->SetXY($col2X, $row5Y);
-        $this->pdf->Cell($col2W, 4, 'CP', 0, 0, 'L');
+        $this->pdf->Cell($col2W, 4, 'Contribuição Previdenciária - Retida', 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row5Y);
-        $this->pdf->Cell($col3W, 4, 'CSLL', 0, 0, 'L');
+        $this->pdf->Cell($col3W, 4, 'Contribuições Sociais - Retidas', 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row5Y);
-        $this->pdf->Cell($col4W, 4, '', 0, 1, 'L');
+        $this->pdf->Cell($col4W, 4, 'Descrição Contrib. Sociais - Retidas', 0, 1, 'L');
 
         // Data row
         $this->pdf->SetFont('helvetica', '', 8);
@@ -781,19 +825,19 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col3X, $row5Y + 4);
         $this->pdf->Cell($col3W, 4, '-', 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row5Y + 4);
-        $this->pdf->Cell($col4W, 4, '', 0, 1, 'L');
+        $this->pdf->Cell($col4W, 4, '-', 0, 1, 'L');
 
         // Header row
         $row6Y = $this->pdf->GetY();
         $this->pdf->SetFont('helvetica', 'B', 7);
         $this->pdf->SetXY($col1X, $row6Y);
-        $this->pdf->Cell($col1W, 4, 'PIS', 0, 0, 'L');
+        $this->pdf->Cell($col1W, 4, 'PIS - Débito Apuração Própria', 0, 0, 'L');
         $this->pdf->SetXY($col2X, $row6Y);
-        $this->pdf->Cell($col2W, 4, 'COFINS', 0, 0, 'L');
+        $this->pdf->Cell($col2W, 4, 'COFINS - Débito Apuração Própria', 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row6Y);
-        $this->pdf->Cell($col3W, 4, 'Retenção do PIS/COFINS', 0, 0, 'L');
+        $this->pdf->Cell($col3W, 4, '', 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row6Y);
-        $this->pdf->Cell($col4W, 4, 'TOTAL TRIBUTAÇÃO FEDERAL', 0, 1, 'L');
+        $this->pdf->Cell($col4W, 4, '', 0, 1, 'L');
 
         // Data row
         $this->pdf->SetFont('helvetica', '', 8);
@@ -802,9 +846,9 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col2X, $row6Y + 4);
         $this->pdf->Cell($col2W, 4, '-', 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row6Y + 4);
-        $this->pdf->Cell($col3W, 4, '-', 0, 0, 'L');
+        $this->pdf->Cell($col3W, 4, '', 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row6Y + 4);
-        $this->pdf->Cell($col4W, 4, '-', 0, 1, 'L');
+        $this->pdf->Cell($col4W, 4, '', 0, 1, 'L');
         $this->pdf->Ln(2);
     }
 
@@ -824,6 +868,10 @@ class NfsePdfGenerator
         $this->pdf->SetFont('helvetica', '', 8);
 
         $val = $this->data['valores'];
+        $tpRetISSQN = (string)($this->data['tributacao']['tpRetISSQN'] ?? '');
+        $issqnRetido = in_array($tpRetISSQN, ['2', '3'], true) && $val['issqnApurado'] > 0
+            ? 'R$ ' . number_format($val['issqnApurado'], 2, ',', '.')
+            : '-';
         $startY = $this->pdf->GetY();
 
         // Header row
@@ -846,15 +894,15 @@ class NfsePdfGenerator
         $this->pdf->SetXY($col3X, $startY + 4);
         $this->pdf->Cell($col3W, 4, '-', 0, 0, 'L');
         $this->pdf->SetXY($col4X, $startY + 4);
-        $this->pdf->Cell($col4W, 4, '-', 0, 1, 'L');
+        $this->pdf->Cell($col4W, 4, $issqnRetido, 0, 1, 'L');
 
         // Header row
         $row2Y = $this->pdf->GetY();
         $this->pdf->SetFont('helvetica', 'B', 7);
         $this->pdf->SetXY($col1X, $row2Y);
-        $this->pdf->Cell($col1W, 4, 'IRRF, CP,CSLL - Retidos', 0, 0, 'L');
+        $this->pdf->Cell($col1W, 4, 'Total das Retenções Federais', 0, 0, 'L');
         $this->pdf->SetXY($col2X, $row2Y);
-        $this->pdf->Cell($col2W, 4, 'PIS/COFINS Retidos', 0, 0, 'L');
+        $this->pdf->Cell($col2W, 4, 'PIS/COFINS - Débito Apur. Própria', 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row2Y);
         $this->pdf->Cell($col3W, 4, '', 0, 0, 'L');
         $this->pdf->SetXY($col4X, $row2Y);
@@ -863,11 +911,12 @@ class NfsePdfGenerator
         // Data row
         $this->pdf->SetFont('helvetica', '', 8);
         $this->pdf->SetXY($col1X, $row2Y + 4);
-        $this->pdf->Cell($col1W, 4, 'R$ ' . number_format($val['valorTotalRet'], 2, ',', '.'), 0, 0, 'L');
+        $this->pdf->Cell($col1W, 4, '-', 0, 0, 'L');
         $this->pdf->SetXY($col2X, $row2Y + 4);
         $this->pdf->Cell($col2W, 4, '-', 0, 0, 'L');
         $this->pdf->SetXY($col3X, $row2Y + 4);
         $this->pdf->Cell($col3W, 4, '', 0, 0, 'L');
+        $this->pdf->SetFont('helvetica', 'B', 8);
         $this->pdf->SetXY($col4X, $row2Y + 4);
         $this->pdf->Cell($col4W, 4, 'R$ ' . number_format($val['valorLiquido'], 2, ',', '.'), 0, 1, 'L');
         $this->pdf->Ln(2);
@@ -972,6 +1021,25 @@ class NfsePdfGenerator
             return $matches[3] . '/' . $matches[2] . '/' . $matches[1] . ' ' . $matches[4] . ':' . $matches[5] . ':' . $matches[6];
         }
         return $value;
+    }
+
+    private function truncateTextToLines(string $text, float $width, int $maxLines, float $lineHeight = 4, string $suffix = '...'): string
+    {
+        $maxHeight = $maxLines * $lineHeight;
+        if ($this->pdf->getStringHeight($width, $text) <= $maxHeight) {
+            return $text;
+        }
+
+        $len = mb_strlen($text);
+        while ($len > mb_strlen($suffix)) {
+            $truncated = mb_substr($text, 0, $len) . $suffix;
+            if ($this->pdf->getStringHeight($width, $truncated) <= $maxHeight) {
+                return $truncated;
+            }
+            $len--;
+        }
+
+        return $suffix;
     }
 
     private function formatCodTribNac($value)
