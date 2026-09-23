@@ -23,3 +23,4 @@ composer.lock
 *.temp
 
 *.svg
+/nfse2.0-layout.xlsx
