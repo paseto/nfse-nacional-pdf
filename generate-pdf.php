@@ -5,36 +5,39 @@ require_once __DIR__ . '/vendor/autoload.php';
 use NfsePdf\NfsePdfGenerator;
 
 try {
-    $xmlFile = __DIR__ . '/nfe-15.xml';
-    $outputFile = __DIR__ . '/nfe-15.pdf';
+    $isCli = (PHP_SAPI === 'cli');
+
+    $xmlArg = $isCli ? ($argv[1] ?? null) : ($_GET['xml'] ?? null);
+    $xmlFile = $xmlArg ?: (__DIR__ . '/fixtures/nfse.xml');
+    if ($xmlFile[0] !== '/') {
+        $xmlFile = __DIR__ . '/' . ltrim($xmlFile, '/');
+    }
 
     if (!file_exists($xmlFile)) {
         throw new Exception("XML file not found: {$xmlFile}");
     }
 
-    $svgLogo = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-shield-shaded" viewBox="0 0 16 16">
-  <path fill-rule="evenodd" d="M8 14.933a1 1 0 0 0 .1-.025q.114-.034.294-.118c.24-.113.547-.29.893-.533a10.7 10.7 0 0 0 2.287-2.233c1.527-1.997 2.807-5.031 2.253-9.188a.48.48 0 0 0-.328-.39c-.651-.213-1.75-.56-2.837-.855C9.552 1.29 8.531 1.067 8 1.067zM5.072.56C6.157.265 7.31 0 8 0s1.843.265 2.928.56c1.11.3 2.229.655 2.887.87a1.54 1.54 0 0 1 1.044 1.262c.596 4.477-.787 7.795-2.465 9.99a11.8 11.8 0 0 1-2.517 2.453 7 7 0 0 1-1.048.625c-.28.132-.581.24-.829.24s-.548-.108-.829-.24a7 7 0 0 1-1.048-.625 11.8 11.8 0 0 1-2.517-2.453C1.928 10.487.545 7.169 1.141 2.692A1.54 1.54 0 0 1 2.185 1.43 63 63 0 0 1 5.072.56"/>
-</svg>';
-
-    $generator = (new NfsePdfGenerator())
-        ->parseXml($xmlFile)
-        ->setLogoSvg($svgLogo)
-        ->setHeaderInfo([
-            // all optional, set only what you need
-            'municipalityLine' => 'Prefeitura Municipal de ',
-            'secretariatLine'  => 'Secretaria Municipal da Fazenda',
-            'phoneLine'        => '(00)0000-0000',
-            'emailLine'        => 'tributos@gov.br',
-        ]);
-
+    $generator = (new NfsePdfGenerator())->parseXml($xmlFile);
     $pdf = $generator->generate();
+    $basename = pathinfo($xmlFile, PATHINFO_FILENAME) . '.pdf';
 
-    $pdf->Output($outputFile, 'F');
-    $pdf->Output($outputFile, 'I');
-
-    echo "PDF generated successfully: {$outputFile}\n";
+    if ($isCli) {
+        $outputFile = $argv[2] ?? (__DIR__ . '/' . $basename);
+        if ($outputFile[0] !== '/') {
+            $outputFile = __DIR__ . '/' . $outputFile;
+        }
+        $pdf->Output($outputFile, 'F');
+        echo "PDF generated successfully: {$outputFile}\n";
+    } else {
+        // Browser: stream PDF (avoids write permission issues on the project dir)
+        $pdf->Output($basename, 'I');
+    }
 } catch (Exception $e) {
-    echo "Error: " . $e->getMessage() . "\n";
+    if (PHP_SAPI === 'cli') {
+        echo "Error: " . $e->getMessage() . "\n";
+    } else {
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Error: ' . $e->getMessage();
+    }
     exit(1);
 }
-

@@ -15,6 +15,8 @@ Este projeto converte arquivos XML de Nota Fiscal de Serviços Eletrônica (NFS-
 PDF formatados (DANFSe - Documento Auxiliar da NFS-e). Solução independente que não tem qualquer relação com o 
 oficial.
 
+Atualizado para **DANFSe v2.0**, conforme a [Nota Técnica SE/CGNFS-e nº 008](https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica/rtc) (documentação técnica RTC).
+
 ## Requisitos
 
 - PHP >= 7.4
