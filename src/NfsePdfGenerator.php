@@ -20,6 +20,8 @@ class NfsePdfGenerator
     private $rowH = 6.3;
     private $logoSvg = null;
     private $showCanhoto = true;
+    /** @var callable|null */
+    private $municipioResolver = null;
     private $contentWidth;
     private $gray = [242, 242, 242];
     private $borderColor = [200, 200, 200];
@@ -96,6 +98,17 @@ class NfsePdfGenerator
      */
     public function setHeaderInfo(array $headerInfo)
     {
+        return $this;
+    }
+
+    /**
+     * Resolve o nome do município a partir do código IBGE (cMun) do endereço de
+     * tomador, intermediário e destinatário. Recebe o código e devolve
+     * "Nome / UF" (ou string vazia para manter o padrão).
+     */
+    public function setMunicipioResolver(callable $resolver)
+    {
+        $this->municipioResolver = $resolver;
         return $this;
     }
 
@@ -181,11 +194,11 @@ class NfsePdfGenerator
             ],
             'emitente' => $this->parsePerson($emit, true, $xLocEmi, $emitUf),
             'prestador' => $this->parsePerson($dps->prest ?? null, false, $xLocEmi, $emitUf),
-            'tomador' => $this->parsePerson($toma, false, $xLocIncid ?: $xLocEmi, $emitUf),
+            'tomador' => $this->parsePerson($toma, false, '', ''),
             'tomadorPresent' => $toma !== null && (isset($toma->CNPJ) || isset($toma->CPF) || isset($toma->NIF) || isset($toma->xNome)),
-            'intermediario' => $this->parsePerson($interm, false, '', $emitUf),
+            'intermediario' => $this->parsePerson($interm, false, '', ''),
             'intermediarioPresent' => $interm !== null && (isset($interm->CNPJ) || isset($interm->CPF) || isset($interm->NIF) || isset($interm->xNome)),
-            'destinatario' => $this->parsePerson($dest, false, '', $emitUf),
+            'destinatario' => $this->parsePerson($dest, false, '', ''),
             'destinatarioPresent' => $dest !== null && (isset($dest->CNPJ) || isset($dest->CPF) || isset($dest->NIF) || isset($dest->xNome)),
             'indDest' => $indDest,
             'opSimpNac' => $opSimpNac,
@@ -309,11 +322,35 @@ class NfsePdfGenerator
         }
         $this->data['ibscbs']['vExclusoes'] = $hasExcl ? $excl : null;
 
-        // Tomador municipio: resolve name from xLoc when only cMun
-        if ($this->data['tomadorPresent'] && $this->data['tomador']['municipioUf'] === '' && $xLocIncid) {
-            $uf = $this->data['tomador']['uf'] ?: $emitUf;
-            $this->data['tomador']['municipioUf'] = trim($xLocIncid . ($uf ? ' / ' . $uf : ''));
+        // Município / UF de tomador, intermediário e destinatário: o XML só traz o
+        // cMun do endereço. xLocIncid é o local de incidência do ISSQN e pode ser
+        // outro município, então só é usado quando o código é o mesmo.
+        $conhecidos = [];
+        if ($emitCmun !== '' && $xLocEmi !== '') {
+            $conhecidos[$emitCmun] = $xLocEmi . ($emitUf !== '' ? ' / ' . $emitUf : '');
         }
+        $cLocIncid = (string)($infNFSe->cLocIncid ?? '');
+        if ($cLocIncid !== '' && $xLocIncid !== '' && !isset($conhecidos[$cLocIncid])) {
+            $conhecidos[$cLocIncid] = $xLocIncid . ($cLocIncid === $emitCmun && $emitUf !== '' ? ' / ' . $emitUf : '');
+        }
+        foreach (['tomador', 'intermediario', 'destinatario'] as $parte) {
+            $cMunParte = (string)($this->data[$parte]['cMun'] ?? '');
+            if ($cMunParte === '') {
+                continue;
+            }
+            $nome = '';
+            if ($this->municipioResolver !== null) {
+                $nome = trim((string)call_user_func($this->municipioResolver, $cMunParte));
+            }
+            if ($nome === '' && isset($conhecidos[$cMunParte])) {
+                $nome = $conhecidos[$cMunParte];
+            }
+            if ($nome !== '') {
+                $this->data[$parte]['municipioUf'] = $nome;
+            }
+        }
+        $this->data['destinatarioEhTomador'] = $this->destinatarioEhTomador($toma, $dest);
+        $this->data['ibscbsPresent'] = $ibsDps !== null && $ibsDps->count() > 0;
 
         return $this;
     }
@@ -612,16 +649,19 @@ class NfsePdfGenerator
             $this->pdf->Image($logoPath, $x + 1.5, $y + 2.2, 40, 0, 'PNG', '', '', false, 300, '', false, false, 0);
         }
 
-        $this->pdf->SetFont('helvetica', 'B', 11);
-        $this->pdf->SetXY($x + 55, $y + 2.4);
-        $this->pdf->Cell(90, 4, 'DANFSe v2.0', 0, 0, 'C');
-        $this->pdf->SetFont('helvetica', 'B', 8);
-        $this->pdf->SetXY($x + 55, $y + 6.4);
-        $this->pdf->Cell(90, 3, 'Documento Auxiliar da NFS-e', 0, 0, 'C');
-        if (($this->data['tpAmb'] ?? '') === '2') {
-            $this->pdf->SetFont('helvetica', 'B', 5.5);
-            $this->pdf->SetXY($x + 55, $y + 9.4);
-            $this->pdf->Cell(90, 2, 'NFS-e SEM VALIDADE JURÍDICA', 0, 0, 'C');
+        // NT 008 item 2.4.3: título e subtítulo em negrito 9 pt; em homologação,
+        // "NFS-e SEM VALIDADE JURÍDICA" em negrito 9 pt, vermelho, logo abaixo.
+        $homologacao = ($this->data['tpAmb'] ?? '') === '2';
+        $this->pdf->SetFont('helvetica', 'B', 9);
+        $this->pdf->SetXY($x + 55, $y + ($homologacao ? 1.0 : 2.6));
+        $this->pdf->Cell(90, 3.3, 'DANFSe v2.0', 0, 0, 'C');
+        $this->pdf->SetXY($x + 55, $y + ($homologacao ? 4.4 : 6.0));
+        $this->pdf->Cell(90, 3.3, 'Documento Auxiliar da NFS-e', 0, 0, 'C');
+        if ($homologacao) {
+            $this->pdf->SetTextColor(255, 0, 0);
+            $this->pdf->SetXY($x + 55, $y + 7.8);
+            $this->pdf->Cell(90, 3.3, 'NFS-e SEM VALIDADE JURÍDICA', 0, 0, 'C');
+            $this->pdf->SetTextColor(0, 0, 0);
         }
 
         $mun = $this->data['localEmissao'] ?: '-';
@@ -659,7 +699,7 @@ class NfsePdfGenerator
         $y2 = $y0 + $hChave;
 
         $chave = $this->data['chaveAcesso'] ?? '';
-        $qrUrl = 'https://www.nfse.gov.br/ConsultaPublica/?chave=' . $chave;
+        $qrUrl = self::consultaPublicaUrl((string)$chave);
         $qrSize = 16;
         $qrX = $x + $leftW + ($qrW - $qrSize) / 2;
         // High-contrast QR (portal: solid black modules)
@@ -751,12 +791,18 @@ class NfsePdfGenerator
 
     private function addDestinatario()
     {
+        // NT 008 itens 2.3.1/2.3.2, como no gerador oficial da Receita Federal.
         $ind = $this->data['indDest'] ?? '';
-        if (!empty($this->data['destinatarioPresent']) && $ind !== '0') {
+        $temTomador = !empty($this->data['tomadorPresent']);
+        if (!empty($this->data['destinatarioPresent'])) {
+            if ($temTomador && !empty($this->data['destinatarioEhTomador'])) {
+                $this->drawMessageBlock('O DESTINATÁRIO É O PRÓPRIO TOMADOR/ADQUIRENTE DA OPERAÇÃO');
+                return;
+            }
             $this->addPersonBlock('DESTINATÁRIO DA OPERAÇÃO', $this->data['destinatario'], false);
             return;
         }
-        if (!empty($this->data['tomadorPresent']) && (empty($this->data['destinatarioPresent']) || $ind === '0' || $ind === '')) {
+        if ($temTomador && !empty($this->data['ibscbsPresent']) && $ind === '0') {
             $this->drawMessageBlock('O DESTINATÁRIO É O PRÓPRIO TOMADOR/ADQUIRENTE DA OPERAÇÃO');
             return;
         }
@@ -799,7 +845,7 @@ class NfsePdfGenerator
         $y = $this->drawRow($y, [
             [$c, 'SERVIÇO PRESTADO', '', ['fill' => true, 'titleMode' => true]],
             [$c, 'Código de Tributação Nacional / Municipal', $cod],
-            [$c, 'Código da NBS', $s['cNBS'] ?? ''],
+            [$c, 'Código da NBS', self::formatNbs((string)($s['cNBS'] ?? ''))],
             [$c, 'Local da Prestação / Sigla UF / País', $localFull],
         ], $h);
 
@@ -811,9 +857,14 @@ class NfsePdfGenerator
             $y += 3.8;
         }
 
+        // Descrição longa quebra em várias linhas, como no gerador oficial.
+        $descricao = (string)($s['descricao'] ?? '');
+        $this->pdf->SetFont('helvetica', '', $this->bodyFont['valorCampo']);
+        $linhas = max(1, min(6, (int)$this->pdf->getNumLines($this->dash($descricao), $this->full - 1.2)));
+        $this->resetBodyFont();
         $y = $this->drawRow($y, [
-            [$this->full, 'Descrição do Serviço', $s['descricao'] ?? ''],
-        ], 6.5);
+            [$this->full, 'Descrição do Serviço', $descricao],
+        ], 3.9 + 2.6 * $linhas);
 
         $this->strokeSection($y0, $y);
         $this->pdf->SetY($y);
@@ -1070,9 +1121,9 @@ class NfsePdfGenerator
         if ($useValor) {
             return sprintf(
                 'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: Federais: %s; Estaduais: %s; Municipais: %s',
-                $this->money($ic['vTotTribFed'] ?? 0, true),
-                $this->money($ic['vTotTribEst'] ?? 0, true),
-                $this->money($ic['vTotTribMun'] ?? 0, true)
+                'R$ ' . $this->money($ic['vTotTribFed'] ?? 0, true),
+                'R$ ' . $this->money($ic['vTotTribEst'] ?? 0, true),
+                'R$ ' . $this->money($ic['vTotTribMun'] ?? 0, true)
             );
         }
         return sprintf(
@@ -1137,8 +1188,9 @@ class NfsePdfGenerator
 
     private function money($v, $zeroAsZero = false)
     {
+        // NT 008 item 2.4.5, nota 12: campo sem informação no XML leva traço.
         if ($v === null) {
-            return $zeroAsZero ? '0,00' : '-';
+            return '-';
         }
         return number_format((float)$v, 2, ',', '.');
     }
@@ -1146,7 +1198,7 @@ class NfsePdfGenerator
     private function percent($v, $zeroAsZero = false)
     {
         if ($v === null) {
-            return $zeroAsZero ? '0,00%' : '-';
+            return '-';
         }
         return number_format((float)$v, 2, ',', '.') . '%';
     }
@@ -1386,5 +1438,35 @@ class NfsePdfGenerator
             '9' => 'CSLL Retido',
         ];
         return $m[$v] ?? ($v !== '' ? $v : '-');
+    }
+
+    /** NT 008 item 2.4.3: endereço do QR Code. */
+    public static function consultaPublicaUrl($chave)
+    {
+        return 'https://www.nfse.gov.br/ConsultaPublica/?tpc=1&chave=' . $chave;
+    }
+
+    /** NBS no formato 9.9999.99.99, como no gerador oficial. */
+    public static function formatNbs($value)
+    {
+        $digits = preg_replace('/\D/', '', (string)$value);
+        if (strlen($digits) !== 9) {
+            return (string)$value;
+        }
+        return substr($digits, 0, 1) . '.' . substr($digits, 1, 4) . '.' . substr($digits, 5, 2) . '.' . substr($digits, 7);
+    }
+
+    private function destinatarioEhTomador($toma, $dest)
+    {
+        if ($toma === null || $dest === null) {
+            return false;
+        }
+        foreach (['CNPJ', 'CPF', 'NIF'] as $tag) {
+            $a = trim((string)($toma->{$tag} ?? ''));
+            if ($a !== '' && $a === trim((string)($dest->{$tag} ?? ''))) {
+                return true;
+            }
+        }
+        return false;
     }
 }
