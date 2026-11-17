@@ -22,6 +22,8 @@ class NfsePdfGenerator
     private $showCanhoto = true;
     /** @var callable|null */
     private $municipioResolver = null;
+    /** @var array<string, string> código IBGE => "Nome / UF" já conhecidos pelo XML */
+    private $municipiosConhecidos = [];
     private $contentWidth;
     private $gray = [242, 242, 242];
     private $borderColor = [200, 200, 200];
@@ -183,7 +185,8 @@ class NfsePdfGenerator
             'xOutInf' => (string)($infNFSe->xOutInf ?? ''),
             'tpAmb' => (string)($dps->tpAmb ?? ''),
             'tpEmit' => (string)($dps->tpEmit ?? ''),
-            'finNFSe' => (string)($dps->finNFSe ?? ''),
+            'finNFSe' => (string)($ibsDps->finNFSe ?? ''),
+            'ibsNfsePresent' => $ibsNfse !== null && $ibsNfse->count() > 0,
             'cLocEmi' => (string)($dps->cLocEmi ?? $emitCmun),
             'dps' => [
                 'numero' => (string)($dps->nDPS ?? ''),
@@ -222,11 +225,15 @@ class NfsePdfGenerator
                 'nProcesso' => (string)($tribMun->exigSusp->nProcesso ?? ''),
                 'nBM' => (string)($tribMun->BM->nBM ?? ''),
                 'vCalcBM' => $this->num($valoresNfse->vCalcBM ?? ($tribMun->BM->vRedBCBM ?? null)),
-                'vDedRed' => $this->num($valoresDps->vAjusteBC->vAjusteBCISSQN ?? null),
+                'vDedRed' => $this->num($valoresDps->vDedRed->vDR ?? null),
+                'vCalcDR' => $this->num($valoresNfse->vCalcDR ?? null),
+                'tpBM' => (string)($valoresNfse->tpBM ?? ''),
+                'vCalcBMNfse' => $this->num($valoresNfse->vCalcBM ?? null),
                 'vDescIncond' => $this->num($valoresDps->vDescCondIncond->vDescIncond ?? null),
                 'vDescCond' => $this->num($valoresDps->vDescCondIncond->vDescCond ?? null),
                 'vBC' => $this->num($valoresNfse->vBC ?? null),
                 'pAliqAplic' => $this->num($valoresNfse->pAliqAplic ?? ($tribMun->pAliq ?? null)),
+                'pAliqAplicNfse' => $this->num($valoresNfse->pAliqAplic ?? null),
                 'tpRetISSQN' => (string)($tribMun->tpRetISSQN ?? ''),
                 'vISSQN' => $this->num($valoresNfse->vISSQN ?? null),
             ],
@@ -237,6 +244,7 @@ class NfsePdfGenerator
                 'vPis' => $this->num($piscofins->vPis ?? null),
                 'vCofins' => $this->num($piscofins->vCofins ?? null),
                 'tpRetPisCofins' => (string)($piscofins->tpRetPisCofins ?? ''),
+                'piscofinsPresent' => $piscofins !== null && $piscofins->count() > 0,
             ],
             'ibscbs' => [
                 'CST' => (string)($gIBSCBS->CST ?? ''),
@@ -246,6 +254,7 @@ class NfsePdfGenerator
                 'xLocalidadeIncid' => (string)($ibsNfse->xLocalidadeIncid ?? ''),
                 'vExclusoes' => null, // computed below
                 'vBC' => $this->num($ibsValores->vBC ?? null),
+                'vCalcReeRepRes' => $this->num($ibsValores->vCalcReeRepRes ?? null),
                 'pRedAliqUF' => $this->num($ibsValores->uf->pRedAliqUF ?? null),
                 'pRedAliqMun' => $this->num($ibsValores->mun->pRedAliqMun ?? null),
                 'pRedAliqCBS' => $this->num($ibsValores->fed->pRedAliqCBS ?? null),
@@ -272,6 +281,9 @@ class NfsePdfGenerator
                 'xInfComp' => (string)($serv->infoCompl->xInfComp ?? ''),
                 'docRef' => (string)($serv->infoCompl->docRef ?? ''),
                 'xPed' => (string)($serv->infoCompl->xPed ?? ''),
+                'xItemPed' => $this->joinItemPed($serv->infoCompl->gItemPed ?? null),
+                'xOutInf' => (string)($serv->infoCompl->xOutInf ?? ''),
+                'inscImobIbs' => (string)($ibsDps->imovel->inscImobFisc ?? ''),
                 'idDocTec' => (string)($serv->infoCompl->idDocTec ?? ''),
                 'cObra' => (string)($serv->obra->cObra ?? ''),
                 'inscImobFisc' => (string)($serv->obra->inscImobFisc ?? ''),
@@ -326,6 +338,7 @@ class NfsePdfGenerator
         // cMun do endereço. xLocIncid é o local de incidência do ISSQN e pode ser
         // outro município, então só é usado quando o código é o mesmo.
         $conhecidos = [];
+        $this->municipiosConhecidos = &$conhecidos;
         if ($emitCmun !== '' && $xLocEmi !== '') {
             $conhecidos[$emitCmun] = $xLocEmi . ($emitUf !== '' ? ' / ' . $emitUf : '');
         }
@@ -338,12 +351,9 @@ class NfsePdfGenerator
             if ($cMunParte === '') {
                 continue;
             }
-            $nome = '';
-            if ($this->municipioResolver !== null) {
-                $nome = trim((string)call_user_func($this->municipioResolver, $cMunParte));
-            }
-            if ($nome === '' && isset($conhecidos[$cMunParte])) {
-                $nome = $conhecidos[$cMunParte];
+            $nome = $this->resolveMunicipioDisplay($cMunParte);
+            if ($nome === $cMunParte) {
+                $nome = '';
             }
             if ($nome !== '') {
                 $this->data[$parte]['municipioUf'] = $nome;
@@ -691,7 +701,7 @@ class NfsePdfGenerator
         $qrW = $this->full - $leftW;
 
         // Chave: white background (no gray) — portal style
-        $this->drawField($x, $y0, $this->full, $hChave, 'CHAVE DE ACESSO DA NFS-e', $this->data['chaveAcesso'] ?? '', [
+        $this->drawField($x, $y0, $this->full, $hChave, 'CHAVE DE ACESSO DA NFS-E', $this->data['chaveAcesso'] ?? '', [
             'labelSize' => $this->bodyFont['labelDestaque'],
             'valueSize' => $this->bodyFont['valorDestaque'],
         ]);
@@ -699,24 +709,34 @@ class NfsePdfGenerator
         $y2 = $y0 + $hChave;
 
         $chave = $this->data['chaveAcesso'] ?? '';
-        $qrUrl = self::consultaPublicaUrl((string)$chave);
-        $qrSize = 16;
+        $qrUrl = self::consultaPublicaUrl((string) $chave);
+        // NT 008 item 2.4.3: QR Code de no mínimo 1,52 cm, ao lado da chave de
+        // acesso, com a legenda em 3 linhas de 6 pt logo abaixo.
+        $qrSize = 15.2;
         $qrX = $x + $leftW + ($qrW - $qrSize) / 2;
-        // High-contrast QR (portal: solid black modules)
-        $this->pdf->write2DBarcode($qrUrl, 'QRCODE,H', $qrX, $y2 + 0.4, $qrSize, $qrSize, [
+        $qrY = $y0 + 0.6;
+        $this->pdf->write2DBarcode($qrUrl, 'QRCODE,H', $qrX, $qrY, $qrSize, $qrSize, [
             'border' => false,
             'padding' => 0,
             'fgcolor' => [0, 0, 0],
             'bgcolor' => [255, 255, 255],
         ], 'N');
-        $this->pdf->SetFont('helvetica', '', $this->bodyFont['qrLegenda']);
-        $this->pdf->SetXY($x + $leftW + 0.5, $y2 + $qrSize + 0.7);
-        $this->pdf->MultiCell($qrW - 1, 1.5, 'A autenticidade desta NFS-e pode ser verificada pela leitura deste código QR ou pela consulta da chave de acesso no portal nacional da NFS-e', 0, 'C', false, 0);
+        $this->pdf->SetFont('helvetica', '', 6);
+        $legenda = [
+            'A autenticidade desta NFS-e pode ser verificada',
+            'pela leitura deste código QR ou pela consulta da',
+            'chave de acesso no portal nacional da NFS-e',
+        ];
+        foreach ($legenda as $n => $linha) {
+            $this->pdf->SetXY($x + $leftW, $qrY + $qrSize + 0.6 + $n * 2.3);
+            $this->pdf->Cell($qrW, 2.3, $linha, 0, 0, 'C');
+        }
+        $this->resetBodyFont();
 
         // Row: número / competência / emissão NFSe
-        $this->drawField($x, $y2, $c, $hRow, 'NÚMERO DA NFS-e', $this->data['numeroNfse'] ?? '');
-        $this->drawField($x + $c, $y2, $c, $hRow, 'COMPETÊNCIA DA NFS-e', $this->data['dps']['competencia'] ?? '');
-        $this->drawField($x + 2 * $c, $y2, $c, $hRow, 'DATA E HORA DA EMISSÃO DA NFS-e', $this->data['dhProc'] ?? '');
+        $this->drawField($x, $y2, $c, $hRow, 'NÚMERO DA NFS-E', $this->data['numeroNfse'] ?? '');
+        $this->drawField($x + $c, $y2, $c, $hRow, 'COMPETÊNCIA DA NFS-E', $this->data['dps']['competencia'] ?? '');
+        $this->drawField($x + 2 * $c, $y2, $c, $hRow, 'DATA E HORA DA EMISSÃO DA NFS-E', $this->data['dhProc'] ?? '');
 
         $y3 = $y2 + $hRow;
         $this->drawField($x, $y3, $c, $hRow, 'NÚMERO DA DPS', $this->data['dps']['numero'] ?? '');
@@ -826,17 +846,19 @@ class NfsePdfGenerator
         $h = $this->rowH;
         $s = $this->data['servico'];
 
-        $codNac = $this->formatCodTribNac($s['cTribNac'] ?? '');
-        $codMun = $s['cTribMun'] !== '' ? $s['cTribMun'] : '';
-        $cod = $this->joinSlash($codNac, $codMun);
-
-        $local = $this->data['localPrestacao'] ?: '';
-        $uf = $this->data['emitente']['uf'] ?? '';
-        $pais = $s['cPaisPrestacao'] !== '' ? $s['cPaisPrestacao'] : ($local !== '' ? 'BR' : '');
-        if ($local !== '' && $uf !== '' && strpos($local, '/') === false) {
-            $local = $local . ' / ' . $uf;
+        $codNac = trim((string) ($s['cTribNac'] ?? ''));
+        $codMun = trim((string) ($s['cTribMun'] ?? ''));
+        if ($codNac === '') {
+            $cod = $codMun;
+        } else {
+            $cod = $this->formatCodTribNac($codNac) . ($codMun !== '' ? ' / ' . $codMun : '');
         }
-        $localFull = $this->joinSlash($local, $pais !== '' ? $pais : null);
+
+        $localFull = $this->joinWithDash(
+            $this->data['localPrestacao'] ?? '',
+            $this->ufFromIbge((string) ($s['cLocPrestacao'] ?? '')),
+            $this->paisOuBr((string) ($s['cPaisPrestacao'] ?? ''))
+        );
 
         $descCod = ($this->data['xTribMun'] ?? '') !== ''
             ? $this->data['xTribMun']
@@ -845,7 +867,7 @@ class NfsePdfGenerator
         $y = $this->drawRow($y, [
             [$c, 'SERVIÇO PRESTADO', '', ['fill' => true, 'titleMode' => true]],
             [$c, 'Código de Tributação Nacional / Municipal', $cod],
-            [$c, 'Código da NBS', self::formatNbs((string)($s['cNBS'] ?? ''))],
+            [$c, 'Código da NBS', self::formatNbs((string) ($s['cNBS'] ?? ''))],
             [$c, 'Local da Prestação / Sigla UF / País', $localFull],
         ], $h);
 
@@ -857,10 +879,11 @@ class NfsePdfGenerator
             $y += 3.8;
         }
 
-        // Descrição longa quebra em várias linhas, como no gerador oficial.
-        $descricao = (string)($s['descricao'] ?? '');
+        // Descrição longa quebra em várias linhas, como no gerador oficial
+        // (limite de 1.300 caracteres, com reticências).
+        $descricao = $this->truncReticencias(trim((string) ($s['descricao'] ?? '')), 1297);
         $this->pdf->SetFont('helvetica', '', $this->bodyFont['valorCampo']);
-        $linhas = max(1, min(6, (int)$this->pdf->getNumLines($this->dash($descricao), $this->full - 1.2)));
+        $linhas = max(1, min(6, (int) $this->pdf->getNumLines($this->dash($descricao), $this->full - 1.2)));
         $this->resetBodyFont();
         $y = $this->drawRow($y, [
             [$this->full, 'Descrição do Serviço', $descricao],
@@ -884,12 +907,22 @@ class NfsePdfGenerator
         $c2 = $this->col2;
         $h = $this->rowH;
 
-        $incid = $this->data['localIncidencia'] ?: '';
-        $uf = $this->data['emitente']['uf'] ?? '';
-        if ($incid !== '' && $uf !== '' && strpos($incid, '/') === false) {
-            $incid .= ' / ' . $uf;
+        $incidFull = $this->joinWithDash(
+            $this->data['localIncidencia'] ?? '',
+            $this->ufFromIbge((string) ($this->data['cLocIncid'] ?? '')),
+            $this->paisOuBr((string) ($m['cPaisResult'] ?? ''))
+        );
+
+        // Como no gerador oficial: benefício, cálculo do BM, deduções e desconto
+        // só aparecem quando algum deles tem valor.
+        $calculoBM = $m['vCalcBMNfse'] ?? null;
+        if ((float) $calculoBM == 0.0) {
+            $calculoBM = $m['vCalcBM'];
         }
-        $incidFull = $this->joinSlash($incid, 'BR');
+        $exibirOpcionais = (int) ($m['tpBM'] ?? 0) > 0
+            || (float) ($m['vCalcBMNfse'] ?? 0) > 0
+            || (float) ($m['vDedRed'] ?? 0) > 0
+            || (float) ($m['vDescIncond'] ?? 0) > 0;
 
         $y = $this->drawRow($y, [
             [$c, 'TRIBUTAÇÃO MUNICIPAL (ISSQN)', '', ['fill' => true, 'titleMode' => true, 'labelSize' => $this->bodyFont['labelSecaoLonga']]],
@@ -905,17 +938,17 @@ class NfsePdfGenerator
         ], $h);
 
         $y = $this->drawRow($y, [
-            [$c, 'Benefício Municipal', $m['nBM'] ?? ''],
-            [$c, 'Cálculo do BM', $this->money($m['vCalcBM'], true)],
-            [$c, 'Total Deduções/Reduções', $this->money($m['vDedRed'], true)],
-            [$c, 'Desconto Incondicionado', $this->money($m['vDescIncond'], true)],
+            [$c, 'Benefício Municipal', $exibirOpcionais ? $this->mapTpBM($m['tpBM'] ?? '') : '-'],
+            [$c, 'Cálculo do BM', $exibirOpcionais ? $this->moneyOrDash($calculoBM) : '-'],
+            [$c, 'Total Deduções/Reduções', $exibirOpcionais ? $this->moneyOrDash($m['vDedRed']) : '-'],
+            [$c, 'Desconto Incondicionado', $exibirOpcionais ? $this->moneyOrDash($m['vDescIncond']) : '-'],
         ], $h);
 
         $y = $this->drawRow($y, [
-            [$c, 'BC ISSQN', $this->money($m['vBC'], true)],
-            [$c, 'Alíquota Aplicada %', $this->percent($m['pAliqAplic'], true)],
+            [$c, 'BC ISSQN', $this->moneyOrDash($m['vBC'])],
+            [$c, 'Alíquota Aplicada', $this->numPctOrDash($this->data['municipal']['pAliqAplicNfse'] ?? null)],
             [$c, 'Retenção do ISSQN', $this->mapTpRetISSQN($m['tpRetISSQN'] ?? '')],
-            [$c, 'ISSQN Apurado', $this->money($m['vISSQN'], true)],
+            [$c, 'ISSQN Apurado', $this->moneyOrDash($m['vISSQN'])],
         ], $h);
 
         $this->strokeSection($y0, $y);
@@ -924,12 +957,6 @@ class NfsePdfGenerator
 
     private function addTributacaoFederal()
     {
-        $compet = $this->data['dps']['dCompetRaw'] ?? '';
-        $year = (int)substr($compet, 0, 4);
-        if ($year > 2026) {
-            return;
-        }
-
         $f = $this->data['federal'];
         $y0 = $this->pdf->GetY();
         $y = $y0;
@@ -937,22 +964,41 @@ class NfsePdfGenerator
         $c2 = $this->col2;
         $h = $this->rowH;
 
-        $tpRet = $f['tpRetPisCofins'] ?? '';
-        $vPis = ($tpRet === '1') ? 0.0 : $f['vPis'];
-        $vCofins = ($tpRet === '1') ? 0.0 : $f['vCofins'];
+        $pis = '-';
+        $cofins = '-';
+        $descRet = '-';
+        $contribSoc = $this->moneyOrDash($f['vRetCSLL']);
+        $tpRet = (string) ($f['tpRetPisCofins'] ?? '');
+        if (!empty($f['piscofinsPresent'])) {
+            if ($tpRet === '1') {
+                // NT 008 v1.02 item 2.4.5: com tpRetPisCofins = 1, PIS/COFINS próprios
+                // são zero e as contribuições retidas somam CSLL + PIS + COFINS.
+                $pis = $this->brl(0.0);
+                $cofins = $this->brl(0.0);
+                $contribSoc = $this->brl((float) $f['vRetCSLL'] + (float) $f['vPis'] + (float) $f['vCofins']);
+            } else {
+                $pis = $this->moneyOrDash($f['vPis']);
+                $cofins = $this->moneyOrDash($f['vCofins']);
+            }
+            $descRet = $this->mapTpRetPisCofins($tpRet);
+        }
 
         $y = $this->drawRow($y, [
             [$c, 'TRIBUTAÇÃO FEDERAL (EXCETO CBS)', '', ['fill' => true, 'titleMode' => true, 'labelSize' => $this->bodyFont['labelSecaoLonga']]],
-            [$c, 'IRRF', $this->money($f['vRetIRRF'], true)],
-            [$c, 'Contribuição Previdenciária - Retida', $this->money($f['vRetCP'], true)],
-            [$c, 'Contribuições Sociais - Retidas', $this->money($f['vRetCSLL'], true)],
+            [$c, 'IRRF', $this->moneyOrDash($f['vRetIRRF'])],
+            [$c, 'Contribuição Previdenciária - Retida', $this->moneyOrDash($f['vRetCP'])],
+            [$c, 'Contribuições Sociais - Retidas', $contribSoc],
         ], $h);
 
-        $y = $this->drawRow($y, [
-            [$c, 'PIS - Débito Apuração Própria', $this->money($vPis, true)],
-            [$c, 'COFINS - Débito Apuração Própria', $this->money($vCofins, true)],
-            [$c2, 'Descrição Contrib. Sociais - Retidas', $this->mapTpRetPisCofins($tpRet)],
-        ], $h);
+        // PIS/COFINS próprios só até a competência de 31/12/2026, como no oficial.
+        $compet = (string) ($this->data['dps']['dCompetRaw'] ?? '');
+        if ($compet === '' || $compet <= '2026-12-31') {
+            $y = $this->drawRow($y, [
+                [$c, 'PIS - Débito Apuração Própria', $pis],
+                [$c, 'COFINS - Débito Apuração Própria', $cofins],
+                [$c2, 'Descrição Contrib. Sociais - Retidas', $descRet],
+            ], $h);
+        }
 
         $this->strokeSection($y0, $y);
         $this->pdf->SetY($y);
@@ -967,51 +1013,66 @@ class NfsePdfGenerator
         $c2 = $this->col2;
         $h = $this->rowH;
 
-        $cst = $this->joinSlash($i['CST'] ?? '', $i['cClassTrib'] ?? '');
-        $locNome = $i['xLocalidadeIncid'] ?: ($this->data['localIncidencia'] ?: '');
-        $uf = $this->data['emitente']['uf'] ?? '';
-        if ($locNome !== '' && $uf !== '' && strpos($locNome, '/') === false) {
-            $locNome .= ' / ' . $uf;
+        // Como no gerador oficial: CST, cClassTrib e indicador só com o grupo
+        // IBSCBS na NFS-e e na DPS; o restante vem da NFS-e.
+        $temIbsNfse = !empty($this->data['ibsNfsePresent']);
+        $temAmbos = $temIbsNfse && !empty($this->data['ibscbsPresent']);
+        $cst = $temAmbos ? $this->dash($i['CST'] ?? '') : '-';
+        $cClass = $temAmbos ? $this->dash($i['cClassTrib'] ?? '') : '-';
+        $cIndOp = $temAmbos ? $this->dash($i['cIndOp'] ?? '') : '-';
+        $codLocal = trim((string) ($i['cLocalidadeIncid'] ?? ''));
+        $nomeLocal = '-';
+        $ufLocal = '-';
+        if ($codLocal !== '') {
+            $resolvido = $this->resolveMunicipioDisplay($codLocal);
+            [$nomeR, $ufR] = array_pad(array_map('trim', explode(' / ', $resolvido, 2)), 2, '');
+            $nomeLocal = $this->dash($nomeR !== '' && $nomeR !== $codLocal ? $nomeR : ($i['xLocalidadeIncid'] ?? ''));
+            $ufLocal = $this->dash($ufR);
+        } elseif (($i['xLocalidadeIncid'] ?? '') !== '') {
+            $nomeLocal = (string) $i['xLocalidadeIncid'];
         }
-        $indOp = implode(' / ', array_filter([
-            $i['cIndOp'] ?? '',
-            $i['cLocalidadeIncid'] ?: ($this->data['cLocIncid'] ?? ''),
-            $locNome,
-        ], function ($v) {
-            return $v !== '' && $v !== null;
-        }));
 
-        $redAliq = $this->joinSlash(
-            $this->percent($i['pRedAliqUF'], true),
-            $this->joinSlash($this->percent($i['pRedAliqMun'], true), $this->percent($i['pRedAliqCBS'], true))
-        );
-        $aliqIbs = $this->joinSlash($this->percent($i['pIBSUF'], true), $this->percent($i['pIBSMun'], true));
+        $exclusoes = null;
+        if ($temIbsNfse || $this->data['valores']['vDescIncond'] !== null || $this->data['municipal']['vISSQN'] !== null) {
+            $exclusoes = (float) ($this->data['valores']['vDescIncond'] ?? 0)
+                + (float) ($this->data['municipal']['vISSQN'] ?? 0)
+                + (float) ($this->data['municipal']['vCalcDR'] ?? 0)
+                + ($temIbsNfse ? (float) ($i['vCalcReeRepRes'] ?? 0) : 0.0)
+                + (!empty($this->data['federal']['piscofinsPresent'])
+                    ? (float) ($this->data['federal']['vPis'] ?? 0) + (float) ($this->data['federal']['vCofins'] ?? 0)
+                    : 0.0);
+        }
 
         $y = $this->drawRow($y, [
             [$c, 'TRIBUTAÇÃO IBS / CBS', '', ['fill' => true, 'titleMode' => true]],
-            [$c, 'CST / cClassTrib', $cst],
-            [$c2, 'Indicador de Operação / Código IBGE Incidência / Município Incidência / Sigla UF', $indOp],
+            [$c, 'CST / cClassTrib', $this->joinValues($cst, $cClass)],
+            [$c2, 'Indicador de Operação / Código IBGE Incidência / Município Incidência / Sigla UF',
+                $this->joinValues($cIndOp, $this->dash($codLocal), $nomeLocal, $ufLocal)],
         ], $h);
 
         $y = $this->drawRow($y, [
-            [$c, 'Exclusões e Reduções da Base de Cálculo', $this->money($i['vExclusoes'], true)],
-            [$c, 'Base de Cálculo Após Exclusões e Reduções', $this->money($i['vBC'], true)],
-            [$c, 'Red. Alíquota IBS / Red. Alíquota CBS % / %', $redAliq],
-            [$c, 'Alíq. - IBS UF / IBS Mun', $aliqIbs],
+            [$c, 'Exclusões e Reduções da Base de Cálculo', $this->moneyOrDash($exclusoes)],
+            [$c, 'Base de Cálculo Após Exclusões e Reduções', $this->moneyOrDash($i['vBC'])],
+            [$c, 'Red. Alíquota IBS / Red. Alíquota CBS', $this->joinValues(
+                $this->pctOrDash($i['pRedAliqUF']),
+                $this->pctOrDash($i['pRedAliqMun']),
+                $this->pctOrDash($i['pRedAliqCBS'])
+            )],
+            [$c, 'Alíquota IBS UF / IBS Mun', $this->joinValues($this->pctOrDash($i['pIBSUF']), $this->pctOrDash($i['pIBSMun']))],
         ], $h);
 
         $y = $this->drawRow($y, [
-            [$c, 'Alíq. Efetiva Estadual - IBS', $this->percent($i['pAliqEfetUF'], true)],
-            [$c, 'Valor Total Apurado Estadual - IBS', $this->money($i['vIBSUF'], true)],
-            [$c, 'Alíq. Efetiva Municipal - IBS', $this->percent($i['pAliqEfetMun'], true)],
-            [$c, 'Valor Total Apurado Municipal - IBS', $this->money($i['vIBSMun'], true)],
+            [$c, 'Alíq. Efetiva Estadual - IBS', $this->pctOrDash($i['pAliqEfetUF'])],
+            [$c, 'Valor Apurado Estadual - IBS', $this->moneyOrDash($i['vIBSUF'])],
+            [$c, 'Alíq. Efetiva Municipal - IBS', $this->pctOrDash($i['pAliqEfetMun'])],
+            [$c, 'Valor Apurado Municipal - IBS', $this->moneyOrDash($i['vIBSMun'])],
         ], $h);
 
         $y = $this->drawRow($y, [
-            [$c, 'Valor Total Apurado - IBS', $this->money($i['vIBSTot'], true)],
-            [$c, 'Alíquota - CBS', $this->percent($i['pCBS'], true)],
-            [$c, 'Alíquota Efetiva - CBS', $this->percent($i['pAliqEfetCBS'], true)],
-            [$c, 'Valor Total Apurado - CBS', $this->money($i['vCBS'], true)],
+            [$c, 'Valor Total Apurado - IBS', $this->moneyOrDash($i['vIBSTot'])],
+            [$c, 'Alíquota - CBS', $this->pctOrDash($i['pCBS'])],
+            [$c, 'Alíquota Efetiva - CBS', $this->pctOrDash($i['pAliqEfetCBS'])],
+            [$c, 'Valor Total Apurado - CBS', $this->moneyOrDash($i['vCBS'])],
         ], $h);
 
         $this->strokeSection($y0, $y);
@@ -1027,27 +1088,26 @@ class NfsePdfGenerator
         $c = $this->col;
         $h = 6.7;
 
-        $totIbsCbs = null;
-        if ($i['vIBSTot'] !== null || $i['vCBS'] !== null) {
-            $totIbsCbs = (float)($i['vIBSTot'] ?? 0) + (float)($i['vCBS'] ?? 0);
-        }
-        $vLiqIbs = $i['vTotNF'];
-        if ($vLiqIbs === null && $v['vLiq'] !== null) {
-            $vLiqIbs = $v['vLiq'];
+        $totIbsCbs = '-';
+        $vLiqIbs = '-';
+        if (!empty($this->data['ibsNfsePresent'])) {
+            $soma = (float) ($i['vIBSTot'] ?? 0) + (float) ($i['vCBS'] ?? 0);
+            $totIbsCbs = $this->moneyOrDash($soma);
+            $vLiqIbs = $this->moneyOrDash($i['vTotNF']);
         }
 
         $y = $this->drawRow($y, [
-            [$c, 'VALOR TOTAL DA NFS-e', '', ['fill' => true, 'titleMode' => true]],
-            [$c, 'VALOR DA OPERAÇÃO / SERVIÇO', $this->money($v['vServ'], true), ['valueBold' => false]],
-            [$c, 'Desconto Incondicionado', $this->money($v['vDescIncond'], true)],
-            [$c, 'Desconto Condicionado', $this->money($v['vDescCond'], true)],
+            [$c, 'VALOR TOTAL DA NFS-E', '', ['fill' => true, 'titleMode' => true]],
+            [$c, 'VALOR DA OPERAÇÃO / SERVIÇO', $this->brl((float) ($v['vServ'] ?? 0)), ['valueBold' => false]],
+            [$c, 'Desconto Incondicionado', $this->moneyOrDash($v['vDescIncond'])],
+            [$c, 'Desconto Condicionado', $this->moneyOrDash($v['vDescCond'])],
         ], $h);
 
         $y = $this->drawRow($y, [
-            [$c, 'Total das Retenções (ISSQN / Federais)', $this->money($v['vTotalRet'], true)],
-            [$c, 'VALOR LÍQUIDO DA NFS-e', $this->money($v['vLiq'], true), ['valueBold' => false]],
-            [$c, 'Total do IBS/CBS', $this->money($totIbsCbs, true)],
-            [$c, 'VALOR LÍQUIDO DA NFS-e + IBS/CBS', $this->money($vLiqIbs, true), [
+            [$c, 'Total das Retenções (ISSQN / Federais)', $this->moneyOrDash($v['vTotalRet'])],
+            [$c, 'VALOR LÍQUIDO DA NFS-e', $this->brl((float) ($v['vLiq'] ?? 0)), ['valueBold' => false]],
+            [$c, 'Total do IBS/CBS', $totIbsCbs],
+            [$c, 'VALOR LÍQUIDO DA NFS-e + IBS/CBS', $vLiqIbs, [
                 'valueBold' => false,
                 'fill' => true,
             ]],
@@ -1067,38 +1127,39 @@ class NfsePdfGenerator
         $c = $this->col;
 
         $ic = $this->data['infoCompl'];
+        $inscImob = trim((string) ($ic['inscImobFisc'] ?? ''));
+        if ($inscImob === '') {
+            $inscImob = trim((string) ($ic['inscImobIbs'] ?? ''));
+        }
+        $campos = [
+            'Inf. Cont.:' => $ic['xInfComp'] ?? '',
+            'NFS-e Subst.:' => $ic['chSubstda'] ?? '',
+            'Doc. Ref.:' => $ic['docRef'] ?? '',
+            'Cod. Obra:' => $ic['cObra'] ?? '',
+            'Insc. Imob.:' => $inscImob,
+            'Cod. Evt.:' => $ic['idAtvEvt'] ?? '',
+            'Doc. Tec.:' => $ic['idDocTec'] ?? '',
+            'Núm. Ped.:' => $ic['xPed'] ?? '',
+            'Item Ped.:' => $ic['xItemPed'] ?? '',
+            'Inf. A. T. Mun.:' => $ic['xOutInf'] ?? '',
+        ];
         $parts = [];
-        if ($ic['xInfComp'] !== '') {
-            $parts[] = 'Inf. Cont.: ' . $ic['xInfComp'];
-        }
-        if ($ic['chSubstda'] !== '') {
-            $parts[] = 'NFS-e Subst.: ' . $ic['chSubstda'];
-        }
-        if ($ic['docRef'] !== '') {
-            $parts[] = 'Doc. Ref.: ' . $ic['docRef'];
-        }
-        if ($ic['cObra'] !== '') {
-            $parts[] = 'Cod. Obra: ' . $ic['cObra'];
-        }
-        if ($ic['inscImobFisc'] !== '') {
-            $parts[] = 'Insc. Imob.: ' . $ic['inscImobFisc'];
-        }
-        if ($ic['idAtvEvt'] !== '') {
-            $parts[] = 'Cod. Evt.: ' . $ic['idAtvEvt'];
-        }
-        if ($ic['idDocTec'] !== '') {
-            $parts[] = 'Doc. Tec.: ' . $ic['idDocTec'];
-        }
-        if ($ic['xPed'] !== '') {
-            $parts[] = 'Núm. Ped.: ' . $ic['xPed'];
-        }
-        if (($this->data['xOutInf'] ?? '') !== '') {
-            $parts[] = 'Inf. A. T. Mun.: ' . $this->data['xOutInf'];
+        foreach ($campos as $rotulo => $valor) {
+            $valor = trim((string) $valor);
+            if ($valor !== '') {
+                $parts[] = $rotulo . ' ' . $valor;
+            }
         }
 
+        // Como no gerador oficial: texto limitado a 2.000 caracteres, com a
+        // linha dos totais aproximados sempre preservada no fim.
         $totaisLine = $this->buildTotaisAproximadosLine();
-        $body = implode(' | ', $parts);
-        $body = $body !== '' ? ($body . "\n" . $totaisLine) : $totaisLine;
+        $base = implode(' | ', $parts);
+        if ($base === '') {
+            $body = $totaisLine;
+        } else {
+            $body = $this->truncReticencias($base, 1997) . ' | ' . $totaisLine;
+        }
 
         $this->fillGray($x, $y, $c, $h);
         $this->strokeRect($x, $y, $this->full, $h);
@@ -1109,7 +1170,7 @@ class NfsePdfGenerator
 
         $this->pdf->SetXY($x + $c + 0.5, $y + 0.6);
         $this->pdf->SetFont('helvetica', '', $this->bodyFont['infoCorpo']);
-        $this->pdf->MultiCell($this->full - $c - 1, 2.1, $this->trunc($body, 1997), 0, 'L', false, 0);
+        $this->pdf->MultiCell($this->full - $c - 1, 2.1, $body, 0, 'L', false, 0);
         $this->resetBodyFont();
         $this->pdf->SetY($y + $h);
     }
@@ -1117,21 +1178,21 @@ class NfsePdfGenerator
     private function buildTotaisAproximadosLine()
     {
         $ic = $this->data['infoCompl'];
-        $useValor = $ic['vTotTribFed'] !== null || $ic['vTotTribEst'] !== null || $ic['vTotTribMun'] !== null;
-        if ($useValor) {
-            return sprintf(
-                'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: Federais: %s; Estaduais: %s; Municipais: %s',
-                'R$ ' . $this->money($ic['vTotTribFed'] ?? 0, true),
-                'R$ ' . $this->money($ic['vTotTribEst'] ?? 0, true),
-                'R$ ' . $this->money($ic['vTotTribMun'] ?? 0, true)
-            );
+        $texto = 'Totais aproximados dos Tributos cfe. Lei nº 12.741/2012: Federais: %s; Estaduais: %s; Municipais: %s;';
+        $vFed = (float) ($ic['vTotTribFed'] ?? 0);
+        $vEst = (float) ($ic['vTotTribEst'] ?? 0);
+        $vMun = (float) ($ic['vTotTribMun'] ?? 0);
+        if ($vFed > 0 || $vEst > 0 || $vMun > 0) {
+            return sprintf($texto, $this->brl($vFed), $this->brl($vEst), $this->brl($vMun));
         }
-        return sprintf(
-            'Totais Aproximados dos Tributos cfe. Lei nº 12.741/2012: Federais: %s; Estaduais: %s; Municipais: %s',
-            $this->percent($ic['pTotTribFed'] ?? 0, true),
-            $this->percent($ic['pTotTribEst'] ?? 0, true),
-            $this->percent($ic['pTotTribMun'] ?? 0, true)
-        );
+        $pFed = (float) ($ic['pTotTribFed'] ?? 0);
+        $pEst = (float) ($ic['pTotTribEst'] ?? 0);
+        $pMun = (float) ($ic['pTotTribMun'] ?? 0);
+        if ($pFed > 0 || $pEst > 0 || $pMun > 0) {
+            return sprintf($texto, $this->pct($pFed), $this->pct($pEst), $this->pct($pMun));
+        }
+
+        return sprintf($texto, 'R$ 0,00', 'R$ 0,00', 'R$ 0,00');
     }
 
     private function addCanhoto()
@@ -1144,7 +1205,7 @@ class NfsePdfGenerator
 
         $this->pdf->SetY($y);
         $this->drawRow($y, [
-            [$c, 'DATA CIENTIFICAÇÃO', '', ['allowEmpty' => true]],
+            [$c, 'DATA CIENTIFICAÇÃO:', '', ['allowEmpty' => true]],
             [$c, 'IDENTIFICAÇÃO E ASSINATURA', '', ['allowEmpty' => true]],
             [$c2, 'Nº NFS-e / CHAVE NFS-e', $chaveLine, ['valueSize' => $this->bodyFont['valorCompacto']]],
         ], $h, true);
@@ -1256,10 +1317,10 @@ class NfsePdfGenerator
             return '';
         }
         if (strlen($n) === 11) {
-            return preg_replace('/(\d{2})(\d{5})(\d{4})/', '($1) $2 $3', $n);
+            return preg_replace('/(\d{2})(\d{5})(\d{4})/', '($1) $2-$3', $n);
         }
         if (strlen($n) === 10) {
-            return preg_replace('/(\d{2})(\d{4})(\d{4})/', '($1) $2 $3', $n);
+            return preg_replace('/(\d{2})(\d{4})(\d{4})/', '($1) $2-$3', $n);
         }
         return (string)$value;
     }
@@ -1299,7 +1360,8 @@ class NfsePdfGenerator
 
     private function mapAmbGer($v)
     {
-        $m = ['1' => 'Prefeitura', '2' => 'Sefin Nacional', '3' => 'Sistema Nacional'];
+        // Leiaute (TSAmbGeradorNFSe): 1 - Prefeitura; 2 - Sistema Nacional da NFS-e.
+        $m = ['1' => 'Prefeitura', '2' => 'Sistema Nacional da NFS-e'];
         return $m[$v] ?? ($v !== '' ? $v : '-');
     }
 
@@ -1322,96 +1384,93 @@ class NfsePdfGenerator
     private function mapCStat($v)
     {
         $m = [
-            '100' => 'Normal',
-            '101' => 'Cancelada',
-            '102' => 'Substituída',
+            '100' => 'NFS-e Regular',
+            '101' => 'NFS-e Cancelada',
+            '102' => 'NFS-e Substituída',
+            '103' => 'NFS-e de Decisão Judicial ou Administrativa',
+            '104' => 'NFS-e Emitida em Contingência',
+            '105' => 'NFS-e de Ajuste',
         ];
-        return $m[$v] ?? ($v !== '' ? $v : '-');
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapFinNFSe($v)
     {
         $m = [
             '0' => 'NFS-e regular',
-            '1' => 'NFS-e regular',
-            '2' => 'NFS-e de crédito',
-            '3' => 'NFS-e de débito',
+            '1' => 'NFS-e de substituição',
+            '2' => 'NFS-e de ajuste',
         ];
-        return $m[$v] ?? ($v !== '' ? $v : '-');
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapOpSimpNac($v)
     {
         $m = [
-            '1' => 'Não Optante',
-            '2' => 'Optante - Microempreendedor Individual (MEI)',
-            '3' => 'Optante - Microempresa ou Empresa de Pequeno Porte (ME/EPP)',
+            '1' => '1 - Não Optante',
+            '2' => '2 - Optante - MEI',
+            '3' => '3 - Optante - ME/EPP',
         ];
-        return $m[$v] ?? ($v !== '' ? $v : '-');
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapRegApTribSN($v)
     {
         $m = [
-            '1' => 'Regime de apuração dos tributos federais e municipal pelo SN',
-            '2' => 'Regime de apuração dos tributos federais pelo SN e ISSQN pela legislação municipal',
-            '3' => 'Regime de apuração dos tributos federais e municipal pela legislação aplicável às demais pessoas jurídicas',
+            '1' => '1 - Regime de apuração dos tributos federais e municipal pelo SN',
+            '2' => '2 - Regime de apuração dos tributos federais pelo SN e ISSQN por fora do SN',
         ];
-        return $m[$v] ?? ($v !== '' ? $v : '-');
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapTribISSQN($v)
     {
         $m = [
-            '1' => 'Operação tributável',
+            '1' => 'Operação Tributável',
             '2' => 'Imunidade',
-            '3' => 'Exportação de serviço',
+            '3' => 'Exportação de Serviço',
             '4' => 'Não Incidência',
         ];
-        return $m[$v] ?? ($v !== '' ? $v : '-');
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapRegEspTrib($v)
     {
-        if ($v === '' || $v === '0') {
-            return '-';
+        if ((string) $v === '') {
+            $v = '0';
         }
         $m = [
-            '1' => 'Ato Cooperado',
+            '0' => 'Nenhum',
+            '1' => 'Ato Cooperado (Cooperativa)',
             '2' => 'Estimativa',
-            '3' => 'Sociedade de profissionais',
-            '4' => 'Cooperativa',
-            '5' => 'Microempresário Individual (MEI)',
-            '6' => 'Microempresa ou Empresa de Pequeno Porte (ME/EPP)',
+            '3' => 'Microempresa Municipal',
+            '4' => 'Notário ou Registrador',
+            '5' => 'Profissional Autônomo',
+            '6' => 'Sociedade de Profissionais',
+            '9' => 'Outros',
         ];
-        return $m[$v] ?? $v;
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapTpImunidade($v)
     {
-        if ($v === '') {
-            return '-';
-        }
         $m = [
-            '1' => 'Patrimônio, renda ou serviços de outros entes',
-            '2' => 'Templos de qualquer culto',
-            '3' => 'Patrimônio, renda ou serviços de partidos políticos e entidades sindicais',
-            '4' => 'Instituições de educação e assistência social',
-            '5' => 'Livros, jornais, periódicos e papel',
+            '1' => 'Patrimônio, renda ou serviços, uns dos outros (CF88, Art 150, VI, a)',
+            '2' => 'Templos de qualquer culto (CF88, Art 150, VI, b)',
+            '3' => 'Patrimônio, renda ou serviços dos partidos políticos, inclusive suas fundações, das entidades sindicais dos trabalhadores, das instituições de educação e de assistência social, sem fins lucrativos, atendidos os requisitos da lei (CF88, Art 150, VI, c)',
+            '4' => 'Livros, jornais, periódicos e o papel destinado a sua impressão (CF88, Art 150, VI, d)',
+            '5' => 'Fonogramas e videofonogramas musicais produzidos no Brasil contendo obras musicais ou literomusicais de autores brasileiros e/ou obras em geral interpretadas por artistas brasileiros bem como os suportes materiais ou arquivos digitais que os contenham, salvo na etapa de replicação industrial de mídias ópticas de leitura a laser.   (CF88, Art 150, VI, e)',
         ];
-        return $m[$v] ?? $v;
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapTpSusp($v)
     {
-        if ($v === '') {
-            return '-';
-        }
         $m = [
-            '1' => 'Exigibilidade suspensa por decisão judicial',
-            '2' => 'Exigibilidade suspensa por processo administrativo',
+            '1' => 'Exigibilidade Suspensa por Decisão Judicial',
+            '2' => 'Exigibilidade Suspensa por Processo Administrativo',
         ];
-        return $m[$v] ?? $v;
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapTpRetISSQN($v)
@@ -1421,24 +1480,27 @@ class NfsePdfGenerator
             '2' => 'Retido pelo Tomador',
             '3' => 'Retido pelo Intermediário',
         ];
-        return $m[$v] ?? ($v !== '' ? $v : '-');
+        return $m[(string) $v] ?? '-';
     }
 
     private function mapTpRetPisCofins($v)
     {
         $m = [
-            '1' => 'PIS/COFINS Retido',
-            '2' => 'PIS/COFINS Não Retido',
-            '3' => 'PIS Retido / COFINS Não Retido',
-            '4' => 'PIS Não Retido / COFINS Retido',
-            '5' => 'PIS/COFINS/CSLL Retido',
-            '6' => 'PIS/COFINS/CSLL Não Retido',
-            '7' => 'PIS Retido',
-            '8' => 'COFINS Retido',
-            '9' => 'CSLL Retido',
+            '0' => 'PIS/COFINS/CSLL Não Retidos',
+            '1' => 'PIS/COFINS Retidos',
+            '2' => 'PIS/COFINS Não Retidos',
+            '3' => 'PIS/COFINS/CSLL Retidos',
+            '4' => 'PIS/COFINS Retidos, CSLL Não Retido',
+            '5' => 'PIS Retido, COFINS/CSLL Não Retido',
+            '6' => 'COFINS Retido, PIS/CSLL Não Retido',
+            '7' => 'PIS Não Retido, COFINS/CSLL Retidos',
+            '8' => 'PIS/COFINS Não Retidos, CSLL Retido',
+            '9' => 'COFINS Não Retido, PIS/CSLL Retidos',
         ];
-        return $m[$v] ?? ($v !== '' ? $v : '-');
+        return $m[(string) $v] ?? '-';
     }
+
+    // ---- Formatação igual ao gerador oficial da Receita Federal ----
 
     /** NT 008 item 2.4.3: endereço do QR Code. */
     public static function consultaPublicaUrl($chave)
@@ -1468,5 +1530,148 @@ class NfsePdfGenerator
             }
         }
         return false;
+    }
+
+    // ---- Formatação igual ao gerador oficial da Receita Federal ----
+
+    /** "R$ 1.234,56" (FormatarValorMonetario). */
+    private function brl(float $v): string
+    {
+        return 'R$ ' . ($v < 0 ? '-' : '') . number_format(abs($v), 2, ',', '.');
+    }
+
+    /** Traço quando ausente ou zero (FormatarValorMonetarioOuTraco). */
+    private function moneyOrDash($v): string
+    {
+        if ($v === null || (float) $v == 0.0) {
+            return '-';
+        }
+
+        return $this->brl((float) $v);
+    }
+
+    private function pct(float $v): string
+    {
+        return number_format($v, 2, ',', '') . '%';
+    }
+
+    /** Traço quando ausente ou zero (FormatarPercentualOuTraco). */
+    private function pctOrDash($v): string
+    {
+        if ($v === null || (float) $v == 0.0) {
+            return '-';
+        }
+
+        return $this->pct((float) $v);
+    }
+
+    /** Sem o sinal de % (FormatarNumeroPercentualOuTraco). */
+    private function numPctOrDash($v): string
+    {
+        if ($v === null || (float) $v == 0.0) {
+            return '-';
+        }
+
+        return number_format((float) $v, 2, ',', '');
+    }
+
+    /** Junta valores já formatados com " / "; tudo vazio vira um traço só. */
+    private function joinValues(string ...$values): string
+    {
+        $parts = [];
+        $temInformacao = false;
+        foreach ($values as $value) {
+            $value = trim($value);
+            if ($value === '') {
+                $value = '-';
+            }
+            if ($value !== '-') {
+                $temInformacao = true;
+            }
+            $parts[] = $value;
+        }
+
+        return $temInformacao ? implode(' / ', $parts) : '-';
+    }
+
+    /** Como joinValues, para textos crus (combinarComBarra). */
+    private function joinWithDash(string ...$values): string
+    {
+        return $this->joinValues(...$values);
+    }
+
+    private function paisOuBr(string $codigo): string
+    {
+        $codigo = strtoupper(trim($codigo));
+
+        return $codigo !== '' ? $codigo : 'BR';
+    }
+
+    /** UF do município pelo código IBGE; vazio quando não encontrado. */
+    private function ufFromIbge(string $codigo): string
+    {
+        $codigo = trim($codigo);
+        if ($codigo === '') {
+            return '';
+        }
+        $emit = $this->data['emitente'] ?? [];
+        if (($emit['cMun'] ?? '') === $codigo && ($emit['uf'] ?? '') !== '') {
+            return (string) $emit['uf'];
+        }
+        $resolvido = $this->resolveMunicipioDisplay($codigo);
+        $pos = strrpos($resolvido, ' / ');
+
+        return $pos === false ? '' : trim(substr($resolvido, $pos + 3));
+    }
+
+    private function truncReticencias(string $texto, int $limite): string
+    {
+        if (mb_strlen($texto) <= $limite) {
+            return $texto;
+        }
+
+        return rtrim(mb_substr($texto, 0, $limite), " \n") . '...';
+    }
+
+    private function joinItemPed($grupos): string
+    {
+        $itens = [];
+        if ($grupos !== null) {
+            foreach ($grupos as $grupo) {
+                $item = trim((string) ($grupo->xItemPed ?? ''));
+                if ($item !== '') {
+                    $itens[] = $item;
+                }
+            }
+        }
+
+        return implode(', ', $itens);
+    }
+
+    private function mapTpBM($v)
+    {
+        $m = [
+            '1' => 'Isenção',
+            '2' => "Redução da BC em 'ppBM' %'",
+            '3' => "Redução da BC em R$ 'vInfoBM'",
+            '4' => "Alíquota Diferenciada de 'aliqDifBM' %",
+        ];
+        return $m[(string) $v] ?? '-';
+    }
+
+    /** "Nome / UF" pelo código IBGE: resolvedor informado, depois os municípios do próprio XML; senão o código. */
+    private function resolveMunicipioDisplay($codigo)
+    {
+        $codigo = trim((string)$codigo);
+        if ($codigo === '') {
+            return '';
+        }
+        if ($this->municipioResolver !== null) {
+            $nome = trim((string)call_user_func($this->municipioResolver, $codigo));
+            if ($nome !== '') {
+                return $nome;
+            }
+        }
+        return $this->municipiosConhecidos[$codigo] ?? $codigo;
     }
 }
