@@ -17,6 +17,19 @@ oficial.
 
 Atualizado para **DANFSe v2.0**, conforme a [Nota Técnica SE/CGNFS-e nº 008](https://www.gov.br/nfse/pt-br/biblioteca/documentacao-tecnica/rtc) (documentação técnica RTC).
 
+## Município de tomador, intermediário e destinatário
+
+O XML da NFS-e traz só o código IBGE (`cMun`) do endereço dessas partes. Sem outra fonte, o PDF mostra o nome apenas quando o código é o mesmo do emitente ou do local de incidência e, nos demais casos, mostra o código. Para exibir sempre o nome, informe um resolvedor:
+
+```php
+$pdf = (new NfsePdf\NfsePdfGenerator())
+    ->setMunicipioResolver(function (string $codigoIbge): string {
+        return 'Indaial / SC'; // busque no seu cadastro de municípios
+    })
+    ->parseXml('nfse.xml')
+    ->generate();
+```
+
 ## Requisitos
 
 - PHP >= 7.4
